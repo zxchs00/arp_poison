@@ -238,7 +238,7 @@ int main(int argc, char* argv[]){
 			exit(-1);
 		}
 	}
-	pd = pcap_open_live(device, snaplen, PROMISCUOUS, 1, ebuf);
+	pd = pcap_open_live(device, snaplen, PROMISCUOUS, 1000, ebuf);
 	if(pd == NULL){
 		perror(ebuf);
 		exit(-1);
@@ -343,6 +343,8 @@ int main(int argc, char* argv[]){
 	}
 
 	printf("Spoofing Router Finished\n");
+	for(i=0;i<42;i++) printf("%02x ",arp_data[i]);
+	printf("\n");
 	for(i=0;i<42;i++) printf("%02x ",arp_data_r[i]);
 	printf("\n");
 ////////Spoofing Router/////////////////////////////////////////////////////////////
